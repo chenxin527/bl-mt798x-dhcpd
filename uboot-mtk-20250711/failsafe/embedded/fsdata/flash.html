@@ -65,8 +65,6 @@
 								data-i18n="flash.action.write">Write</button>
 							<button type="button" class="button button-danger" onclick="flashErase()"
 								data-i18n="flash.action.erase">Erase</button>
-							<button type="button" class="button button-warn" onclick="flashFormatData()"
-								data-i18n="flash.action.format">Format</button>
 						</div>
 					</div>
 
@@ -82,21 +80,30 @@
 					</div>
 
 					<div class="field">
-						<label for="flash_data" data-i18n="flash.label.data">Hex data:</label>
+						<label for="flash_hex_grid" data-i18n="flash.label.data">Hex data:</label>
 						<div class="hex-editor">
 							<div class="hex-header">
 								<div class="hex-offset-title" data-i18n="flash.label.offset">Offset</div>
 								<div class="hex-x-title">00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</div>
 								<div class="hex-ascii-title" data-i18n="flash.label.ascii">ASCII</div>
 							</div>
-							<div class="hex-body">
-								<pre id="flash_offset" class="hex-offset"></pre>
-								<textarea id="flash_data" class="hex-input" rows="10"
-									placeholder="00 11 22 33"></textarea>
-								<pre id="flash_ascii" class="hex-ascii"></pre>
-							</div>
+						<div class="hex-body">
+							<pre id="flash_offset" class="hex-offset"></pre>
+							<div id="flash_hex_grid" class="hex-grid" tabindex="0"></div>
+							<input id="flash_hex_input" type="text" class="hex-overlay-input"
+								maxlength="2" autocomplete="off" aria-hidden="true">
+							<pre id="flash_ascii" class="hex-ascii"></pre>
+						</div>
 						</div>
 					</div>
+
+				<div id="flash_page_controls" class="hex-page-controls" style="display:none;">
+					<button id="flash_page_prev" class="button button-sm"
+						onclick="flashGoToPage(flashCurrentPage - 1)" data-i18n-html="flash.action.prev">&#9664; Prev</button>
+					<span id="flash_page_info" class="page-info"></span>
+					<button id="flash_page_next" class="button button-sm"
+						onclick="flashGoToPage(flashCurrentPage + 1)" data-i18n-html="flash.action.next">Next &#9654;</button>
+				</div>
 
 					<div class="backup-form" style="margin-top: 16px;">
 						<div class="form-row form-row-2">
@@ -118,17 +125,17 @@
 						</div>
 					</div>
 				</div>
-				<div class="card-foot">
-					<div class="i w">
-						<strong data-i18n="common.warnings">WARNINGS</strong>
-						<ul>
-							<li data-i18n="flash.warn.1">writing wrong data may brick the device</li>
-							<li data-i18n="flash.warn.2">always double-check target and range</li>
-							<li data-i18n="flash.warn.3">do not power off during write/restore</li>
-							<li data-i18n="flash.warn.4">max size in once read/write is 4KiB</li>
-						</ul>
-					</div>
+			<div class="card-foot">
+				<div class="i w">
+					<strong data-i18n="common.warnings">WARNINGS</strong>
+					<ul>
+						<li data-i18n="flash.warn.1">writing wrong data may brick the device</li>
+						<li data-i18n="flash.warn.2">always double-check target and range</li>
+						<li data-i18n="flash.warn.3">do not power off during write/restore</li>
+						<li data-i18n="flash.warn.4">large reads/writes may be slow &amp; risk OOM</li>
+					</ul>
 				</div>
+			</div>
 			</div>
 			<div id="version"></div>
 		</div>

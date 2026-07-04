@@ -214,7 +214,7 @@ int start_web_failsafe(void)
 	 * before the next poll.
 	 */
 	printf("[FAILSAFE] entering poll loop, done_flag=%d\n", mtk_tcp_done_flag);
-	while (!ctrlc() && !mtk_tcp_done_flag) {
+	while (!ctrlc() && !mtk_tcp_done_flag && !auto_action_pending) {
 		bool need_poll = failsafe_httpd_running;
 
 #ifdef CONFIG_MTK_DHCPD

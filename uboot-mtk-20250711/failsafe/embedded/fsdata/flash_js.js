@@ -50,143 +50,357 @@ function flashPadHex(value, width) {
     return hexString
 }
 
-function flashExtractBytes(text) {
-    let bytes = [];
-    if (!text) return bytes;
-    const byteMatches = text.match(/[0-9a-fA-F]{2}/g);
-    if (!byteMatches) return bytes;
-    for (let byteIndex = 0; byteIndex < byteMatches.length; byteIndex++) bytes.push(parseInt(byteMatches[byteIndex], 16));
-    return bytes
+/* ── Hex grid state ── */
+let flashHexBytes = [];
+let flashHexModified = new Set();
+let flashSelectedByte = -1;
+let flashSelectionStart = -1;   /* anchor of range selection */
+let flashSelectionEnd = -1;     /* other end of range selection */
+let flashIsDragging = false;
+let flashDragAnchor = -1;
+const FLASH_MAX_SELECTION = 256; /* max bytes selectable at once */
+
+/* ── Pagination ── */
+const FLASH_PAGE_SIZE = 512;     /* bytes per page (32 rows) */
+let flashCurrentPage = 0;
+let flashReadBase = 0;           /* absolute start address of read range */
+let flashTotalPages = 0;
+
+/* Return sorted selection range { start, end, count }, or null if no range */
+function flashGetSelectionRange() {
+    if (flashSelectionStart < 0 || flashSelectionEnd < 0) return null;
+    const lo = Math.min(flashSelectionStart, flashSelectionEnd);
+    const hi = Math.max(flashSelectionStart, flashSelectionEnd);
+    return { start: lo, end: hi, count: hi - lo + 1 };
 }
 
-function flashPosToByteIndex(text, pos) {
-    let hexDigitCount = 0;
-    if (!text || pos <= 0) return 0;
-    for (let charIndex = 0; charIndex < pos && charIndex < text.length; charIndex++) {
-        if (/[0-9a-fA-F]/.test(text[charIndex])) hexDigitCount++;
+/* Set both ends of the range, clamping to FLASH_MAX_SELECTION */
+function flashSetSelectionRange(anchor, cursor) {
+    const maxEnd = anchor + FLASH_MAX_SELECTION - 1;
+    const minEnd = anchor - FLASH_MAX_SELECTION + 1;
+    const clamped = cursor < anchor ? Math.max(cursor, minEnd) : Math.min(cursor, maxEnd);
+    flashSelectionStart = anchor;
+    flashSelectionEnd = clamped;
+    flashSelectedByte = cursor;
+    flashRenderHexGrid();
+    const inp = document.getElementById("flash_hex_input");
+    if (inp) { inp.value = ""; inp.focus(); }
+}
+
+/* Serialize byte array to space-separated hex string */
+function flashHexBytesToHexStr() {
+    const parts = [];
+    for (let i = 0; i < flashHexBytes.length; i++) parts.push(flashPadHex(flashHexBytes[i], 2));
+    return parts.join(" ")
+}
+
+/* Parse hex string into byte array */
+function flashHexStrToBytes(hexStr) {
+    const matches = (hexStr || "").match(/[0-9a-fA-F]{2}/g);
+    if (!matches) return [];
+    const arr = [];
+    for (let i = 0; i < matches.length; i++) arr.push(parseInt(matches[i], 16));
+    return arr
+}
+
+/* Ensure there is always a selected byte (first byte if nothing selected) */
+function flashEnsureHexSelected() {
+    if (flashHexBytes.length === 0) return false;
+    if (flashSelectedByte < 0 || flashSelectedByte >= flashHexBytes.length)
+        flashSelectedByte = 0;
+    return true
+}
+
+/* Render the hex byte grid — only current page */
+function flashRenderHexGrid() {
+    const grid = document.getElementById("flash_hex_grid");
+    if (!grid) return;
+    const range = flashGetSelectionRange();
+    const pageStart = flashCurrentPage * FLASH_PAGE_SIZE;
+    const pageEnd = Math.min(pageStart + FLASH_PAGE_SIZE, flashHexBytes.length);
+    grid.innerHTML = "";
+    for (let row = pageStart; row < pageEnd; row += 16) {
+        const rowDiv = document.createElement("div");
+        rowDiv.className = "hex-row";
+        for (let col = 0; col < 16 && row + col < pageEnd; col++) {
+            const idx = row + col;
+            const span = document.createElement("span");
+            span.className = "hex-byte";
+            span.dataset.index = idx;
+            span.textContent = flashPadHex(flashHexBytes[idx], 2);
+            const inRange = range && idx >= range.start && idx <= range.end;
+            if (inRange) span.classList.add("in-range");
+            if (idx === flashSelectedByte) span.classList.add("selected");
+            if (flashHexModified.has(idx)) span.classList.add("modified");
+            rowDiv.appendChild(span);
+        }
+        grid.appendChild(rowDiv);
     }
-    return Math.floor(hexDigitCount / 2)
 }
 
-function flashByteIndexToPos(byteIndex) {
-    if (!isFinite(byteIndex) || byteIndex < 0) return 0;
-    const lineIndex = Math.floor(byteIndex / 16);
-    const columnIndex = byteIndex % 16;
-    return lineIndex * 48 + columnIndex * 3
-}
-
-function flashSetCaretToByte(byteIndex) {
-    const data = document.getElementById("flash_data");
-    if (!data) return;
-    const pos = flashByteIndexToPos(byteIndex);
-    data.focus();
-    data.setSelectionRange(pos, pos);
-    flashSyncScroll()
-}
-
-function flashFormatHexLines(bytes) {
-    let lines = [];
-    for (let byteIndex = 0; byteIndex < bytes.length; byteIndex++) {
-        if (byteIndex && byteIndex % 16 === 0) lines.push("\n");
-        lines.push(flashPadHex(bytes[byteIndex], 2));
-        if (byteIndex % 16 !== 15 && byteIndex !== bytes.length - 1) lines.push(" ");
-    }
-    return lines.join("")
-}
-
+/* Render offset and ASCII columns — current page only, absolute addresses */
 function flashRenderHexViews() {
-    const dataElement = document.getElementById("flash_data");
-    const offsetElement = document.getElementById("flash_offset");
-    const asciiElement = document.getElementById("flash_ascii");
-    const start = document.getElementById("flash_start");
-    if (!dataElement || !offsetElement || !asciiElement) return;
-    const bytes = flashExtractBytes(dataElement.value || "");
-    let base = start ? parseUserLen(start.value) : 0;
-    base = base === null ? 0 : base;
-    const asciiLines = [];
+    const offsetEl = document.getElementById("flash_offset");
+    const asciiEl = document.getElementById("flash_ascii");
+    if (!offsetEl || !asciiEl) return;
+    const pageStart = flashCurrentPage * FLASH_PAGE_SIZE;
+    const pageEnd = Math.min(pageStart + FLASH_PAGE_SIZE, flashHexBytes.length);
     const offLines = [];
-    for (let rowIndex = 0; rowIndex < bytes.length; rowIndex += 16) {
-        const rowBytes = bytes.slice(rowIndex, rowIndex + 16);
-        offLines.push("0x" + flashPadHex(base + rowIndex, 8));
-        for (let columnIndex = 0; columnIndex < rowBytes.length; columnIndex++) {
-            const byteValue = rowBytes[columnIndex];
-            asciiLines.push(byteValue >= 0x20 && byteValue <= 0x7E ? String.fromCharCode(byteValue) : ".");
+    const asciiLines = [];
+    for (let row = pageStart; row < pageEnd; row += 16) {
+        offLines.push("0x" + flashPadHex(flashReadBase + row, 8));
+        for (let col = 0; col < 16 && row + col < pageEnd; col++) {
+            const b = flashHexBytes[row + col];
+            asciiLines.push(b >= 0x20 && b <= 0x7E ? String.fromCharCode(b) : ".");
         }
-        if (rowBytes.length < 16) {
-            for (let columnIndex = rowBytes.length; columnIndex < 16; columnIndex++) asciiLines.push(" ");
-        }
+        if (row + 16 > pageEnd)
+            for (let col = pageEnd - row; col < 16; col++) asciiLines.push(" ");
         asciiLines.push("\n");
     }
-    offsetElement.textContent = offLines.join("\n");
-    asciiElement.textContent = asciiLines.join("").replace(/\n$/, "");
+    offsetEl.textContent = offLines.join("\n");
+    asciiEl.textContent = asciiLines.join("").replace(/\n$/, "");
 }
 
-function flashNormalizeHexInput() {
-    const dataElement = document.getElementById("flash_data");
-    if (!dataElement) return;
-    const bytes = flashExtractBytes(dataElement.value || "");
-    dataElement.value = flashFormatHexLines(bytes);
-    flashRenderHexViews()
-}
-
-function flashAlignInput(keepCaret) {
-    const dataElement = document.getElementById("flash_data");
-    if (!dataElement) return;
-    const caretPosition = dataElement.selectionStart || 0;
-    const byteIndex = flashPosToByteIndex(dataElement.value || "", caretPosition);
-    const bytes = flashExtractBytes(dataElement.value || "");
-    dataElement.value = flashFormatHexLines(bytes);
-    if (keepCaret) flashSetCaretToByte(byteIndex);
+/* Select a byte; auto-navigate page if needed */
+function flashSelectByte(index) {
+    if (index < 0 || index >= flashHexBytes.length) return;
+    const newPage = Math.floor(index / FLASH_PAGE_SIZE);
+    if (newPage !== flashCurrentPage) {
+        flashCurrentPage = newPage;
+        flashUpdatePageControls();
+    }
+    flashSelectedByte = index;
+    flashSelectionStart = index;
+    flashSelectionEnd = index;
+    if (document.getElementById("flash_hex_input")) document.getElementById("flash_hex_input").value = "";
+    flashRenderHexGrid();
     flashRenderHexViews();
+    const inp = document.getElementById("flash_hex_input");
+    if (inp) inp.focus();
+    flashScrollToByte(index);
 }
 
-function flashFormatData() {
-    if (!confirm(t("flash.confirm.format"))) return;
-    flashAlignInput(false);
-    flashSetStatus(t("flash.status.formatted"))
+/* Focus the hidden input (for keyboard capture) */
+function flashFocusHexInput() {
+    const inp = document.getElementById("flash_hex_input");
+    if (inp) inp.focus();
 }
 
-function flashSnapCaret() {
-    const dataElement = document.getElementById("flash_data");
-    if (!dataElement) return;
-    const caretPosition = dataElement.selectionStart || 0;
-    const byteIndex = flashPosToByteIndex(dataElement.value || "", caretPosition);
-    flashSetCaretToByte(byteIndex)
+/* Scroll grid to show the row containing byteIndex (page-relative) */
+function flashScrollToByte(byteIndex) {
+    const grid = document.getElementById("flash_hex_grid");
+    if (!grid || flashHexBytes.length === 0) return;
+    const pageStart = flashCurrentPage * FLASH_PAGE_SIZE;
+    const rowIdx = Math.floor((byteIndex - pageStart) / 16);
+    const rows = grid.querySelectorAll(".hex-row");
+    if (rows.length > rowIdx && rowIdx >= 0) {
+        const row = rows[rowIdx];
+        const gridTop = grid.getBoundingClientRect().top;
+        const rowTop = row.getBoundingClientRect().top;
+        const rowBottom = row.getBoundingClientRect().bottom;
+        if (rowTop < gridTop || rowBottom > gridTop + grid.clientHeight)
+            row.scrollIntoView({ block: "nearest" });
+    }
+    flashSyncScroll();
 }
 
+/* Sync scroll among grid, offset and ascii columns */
 function flashSyncScroll() {
-    const dataElement = document.getElementById("flash_data");
-    const offsetElement = document.getElementById("flash_offset");
-    const asciiElement = document.getElementById("flash_ascii");
-    if (!dataElement || !offsetElement || !asciiElement) return;
-    offsetElement.scrollTop = dataElement.scrollTop;
-    asciiElement.scrollTop = dataElement.scrollTop
+    const grid = document.getElementById("flash_hex_grid");
+    const offsetEl = document.getElementById("flash_offset");
+    const asciiEl = document.getElementById("flash_ascii");
+    if (!grid || !offsetEl || !asciiEl) return;
+    offsetEl.scrollTop = grid.scrollTop;
+    asciiEl.scrollTop = grid.scrollTop;
 }
 
+/* Jump to an absolute offset (relative to read base) */
 function flashJumpToOffset() {
     const jumpInput = document.getElementById("flash_jump");
-    const start = document.getElementById("flash_start");
-    const dataElement = document.getElementById("flash_data");
-    if (!jumpInput || !dataElement) return;
+    const grid = document.getElementById("flash_hex_grid");
+    if (!jumpInput || !grid || flashHexBytes.length === 0) return;
     const targetOffset = parseUserLen(jumpInput.value);
     if (targetOffset === null) {
         flashSetStatus(t("flash.error.jump"));
-        return
+        return;
     }
-    let base = start ? parseUserLen(start.value) : 0;
-    base = base === null ? 0 : base;
-    const bytes = flashExtractBytes(dataElement.value || "");
-    const byteIndex = targetOffset - base;
-    if (byteIndex < 0 || byteIndex >= bytes.length) {
+    const byteIndex = targetOffset - flashReadBase;
+    if (byteIndex < 0 || byteIndex >= flashHexBytes.length) {
         flashSetStatus(t("flash.error.jump"));
-        return
+        return;
     }
-    flashSetCaretToByte(byteIndex);
-    const lineHeight = parseFloat(getComputedStyle(dataElement).lineHeight) || 18;
-    const lineIndex = Math.floor(byteIndex / 16);
-    dataElement.scrollTop = lineIndex * lineHeight;
+    flashSelectByte(byteIndex);
+    flashSetStatus("");
+}
+
+/* ── Pagination controls ── */
+function flashGoToPage(n) {
+    n = Math.max(0, Math.min(n, flashTotalPages - 1));
+    if (n === flashCurrentPage || !isFinite(n)) return;
+    flashCurrentPage = n;
+    flashRenderHexGrid();
+    flashRenderHexViews();
+    flashUpdatePageControls();
+    const grid = document.getElementById("flash_hex_grid");
+    if (grid) grid.scrollTop = 0;
     flashSyncScroll();
-    flashSetStatus("")
+}
+
+function flashUpdatePageControls() {
+    const container = document.getElementById("flash_page_controls");
+    const info = document.getElementById("flash_page_info");
+    if (!container || !info) return;
+    const show = flashTotalPages > 1;
+    container.style.display = show ? "flex" : "none";
+    if (show) {
+        info.textContent = (flashCurrentPage + 1) + " / " + flashTotalPages;
+        document.getElementById("flash_page_prev").disabled = flashCurrentPage <= 0;
+        document.getElementById("flash_page_next").disabled = flashCurrentPage >= flashTotalPages - 1;
+    }
+}
+
+/* ── Smart write: build contiguous modified-region chunks ── */
+function flashBuildWriteChunks() {
+    if (flashHexModified.size === 0) return [];
+    const sorted = Array.from(flashHexModified).sort(function (a, b) { return a - b; });
+    const chunks = [];
+    let chunkStart = sorted[0];
+    let chunkEnd = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] === chunkEnd + 1) {
+            chunkEnd = sorted[i];
+        } else {
+            chunks.push({ start: chunkStart, end: chunkEnd, count: chunkEnd - chunkStart + 1 });
+            chunkStart = sorted[i];
+            chunkEnd = sorted[i];
+        }
+    }
+    chunks.push({ start: chunkStart, end: chunkEnd, count: chunkEnd - chunkStart + 1 });
+    return chunks;
+}
+
+/* ── Keyboard navigation ── */
+function flashHandleHexKey(e) {
+    if (flashHexBytes.length === 0) return;
+    flashEnsureHexSelected();
+    const key = e.key;
+    const prev = flashSelectedByte;
+    let consumed = true;
+    if (key === "ArrowRight")       flashSelectedByte = Math.min(flashSelectedByte + 1, flashHexBytes.length - 1);
+    else if (key === "ArrowLeft")   flashSelectedByte = Math.max(flashSelectedByte - 1, 0);
+    else if (key === "ArrowDown")   flashSelectedByte = Math.min(flashSelectedByte + 16, flashHexBytes.length - 1);
+    else if (key === "ArrowUp")     flashSelectedByte = Math.max(flashSelectedByte - 16, 0);
+    else if (key === "Tab")         flashSelectedByte = e.shiftKey ? Math.max(flashSelectedByte - 1, 0) : Math.min(flashSelectedByte + 1, flashHexBytes.length - 1);
+    else if (key === "Home")        flashSelectedByte = Math.floor(flashSelectedByte / 16) * 16;
+    else if (key === "End")         flashSelectedByte = Math.min(Math.floor(flashSelectedByte / 16) * 16 + 15, flashHexBytes.length - 1);
+    else if (key === "PageDown")    flashSelectedByte = Math.min(flashSelectedByte + 64, flashHexBytes.length - 1);
+    else if (key === "PageUp")      flashSelectedByte = Math.max(flashSelectedByte - 64, 0);
+    else if (key === "Escape")      { consumed = false; document.getElementById("flash_hex_input").blur(); }
+    else consumed = false;
+
+    if (consumed && flashSelectedByte !== prev) {
+        e.preventDefault();
+        const inp = document.getElementById("flash_hex_input");
+        if (inp) inp.value = "";
+        if (e.shiftKey) {
+            if (flashSelectionStart < 0) flashSelectionStart = prev;
+            flashSelectionEnd = flashSelectedByte;
+        } else {
+            flashSelectionStart = flashSelectedByte;
+            flashSelectionEnd = flashSelectedByte;
+        }
+        /* auto-navigate page */
+        const newPage = Math.floor(flashSelectedByte / FLASH_PAGE_SIZE);
+        if (newPage !== flashCurrentPage) {
+            flashCurrentPage = newPage;
+            flashUpdatePageControls();
+        }
+        flashRenderHexGrid();
+        flashRenderHexViews();
+        flashFocusHexInput();
+        flashScrollToByte(flashSelectedByte);
+    }
+}
+
+/* ── Hex input: single byte or fill selected range ── */
+function flashHandleHexInput(e) {
+    if (flashHexBytes.length === 0) return;
+    flashEnsureHexSelected();
+    const inp = document.getElementById("flash_hex_input");
+    if (!inp) return;
+    let val = inp.value.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+    if (val.length > 2) val = val.slice(0, 2);
+    inp.value = val;
+
+    if (val.length === 2) {
+        const byteVal = parseInt(val, 16);
+        if (!isNaN(byteVal)) {
+            const range = flashGetSelectionRange();
+            if (range && range.count > 1) {
+                for (let i = range.start; i <= range.end; i++) {
+                    flashHexBytes[i] = byteVal;
+                    flashHexModified.add(i);
+                }
+                flashSetStatus("Filled " + range.count + " bytes");
+            } else {
+                flashHexBytes[flashSelectedByte] = byteVal;
+                flashHexModified.add(flashSelectedByte);
+            }
+        }
+        inp.value = "";
+        // auto-advance (skip over range if multi-selected)
+        if (flashSelectedByte + 1 < flashHexBytes.length) {
+            flashSelectedByte++;
+            flashSelectByte(flashSelectedByte);
+        } else {
+            flashRenderHexGrid();
+            flashRenderHexViews();
+            flashFocusHexInput();
+        }
+    }
+}
+
+/* ── Mouse drag selection ── */
+function flashHexByteAtPoint(clientX, clientY) {
+    const elem = document.elementFromPoint(clientX, clientY);
+    if (!elem) return -1;
+    const target = elem.closest(".hex-byte");
+    if (!target) return -1;
+    return parseInt(target.dataset.index, 10);
+}
+
+function flashHexGridMouseDown(e) {
+    const idx = flashHexByteAtPoint(e.clientX, e.clientY);
+    if (idx < 0 || idx >= flashHexBytes.length) return;
+    e.preventDefault();
+    flashIsDragging = true;
+    flashDragAnchor = idx;
+    flashSetSelectionRange(idx, idx);
+    document.addEventListener("mousemove", flashHexGridMouseMove);
+    document.addEventListener("mouseup", flashHexGridMouseUp);
+}
+
+function flashHexGridMouseMove(e) {
+    if (!flashIsDragging) return;
+    const idx = flashHexByteAtPoint(e.clientX, e.clientY);
+    if (idx < 0 || idx >= flashHexBytes.length) return;
+    flashSetSelectionRange(flashDragAnchor, idx);
+}
+
+function flashHexGridMouseUp(e) {
+    flashIsDragging = false;
+    document.removeEventListener("mousemove", flashHexGridMouseMove);
+    document.removeEventListener("mouseup", flashHexGridMouseUp);
+    flashFocusHexInput();
+}
+
+/* Handle click on the hex grid (single click = single select, drag = range) */
+function flashHexGridClick(e) {
+    if (flashIsDragging) return;
+    const idx = flashHexByteAtPoint(e.clientX, e.clientY);
+    if (idx >= 0 && idx < flashHexBytes.length) {
+        flashSelectByte(idx);
+    }
 }
 
 function flashFindLastBefore(str, sub, limit) {
@@ -330,7 +544,8 @@ function flashInit() {
     const targetSelect = document.getElementById("flash_target");
     const startInput = document.getElementById("flash_start");
     const endInput = document.getElementById("flash_end");
-    const dataElement = document.getElementById("flash_data");
+    const gridElement = document.getElementById("flash_hex_grid");
+    const hexInput = document.getElementById("flash_hex_input");
     const infoElement = document.getElementById("flash_info");
     const restoreInfoElement = document.getElementById("flash_restore_info");
     const backupInput = document.getElementById("flash_backup");
@@ -339,14 +554,18 @@ function flashInit() {
     if (endInput) endInput.oninput = flashUpdateRangeHint;
     flashUpdateRangeHint();
     flashRenderHexViews();
+    flashUpdatePageControls();
     flashSetStatus("");
 
-    if (dataElement) {
-        dataElement.addEventListener("input", () => { flashAlignInput(true); });
-        dataElement.addEventListener("blur", () => { flashAlignInput(false); });
-        dataElement.addEventListener("click", flashSnapCaret);
-        dataElement.addEventListener("keyup", flashSnapCaret);
-        dataElement.addEventListener("scroll", flashSyncScroll);
+    if (gridElement) {
+        gridElement.addEventListener("mousedown", flashHexGridMouseDown);
+        gridElement.addEventListener("click", flashHexGridClick);
+        gridElement.addEventListener("scroll", flashSyncScroll);
+    }
+
+    if (hexInput) {
+        hexInput.addEventListener("keydown", flashHandleHexKey);
+        hexInput.addEventListener("input", flashHandleHexInput);
     }
 
     if (backupInput) backupInput.onchange = () => {
@@ -445,11 +664,12 @@ function flashInit() {
     });
 }
 
+const FLASH_READ_CHUNK_SIZE = 256 * 1024; /* must match backend FLASH_READ_CHUNK */
+
 async function flashRead() {
     const targetSelect = document.getElementById("flash_target");
     const startInput = document.getElementById("flash_start");
     const endInput = document.getElementById("flash_end");
-    const dataElement = document.getElementById("flash_data");
     if (!targetSelect || !startInput || !endInput) return;
     if (!targetSelect.value) {
         alert(t("flash.error.no_target"));
@@ -460,28 +680,64 @@ async function flashRead() {
         return;
     }
     try {
-        flashSetStatus(t("flash.status.reading"));
+        const totalSize = parseUserLen(endInput.value) - parseUserLen(startInput.value);
+        if (totalSize <= 0) {
+            alert(t("flash.error.bad_range"));
+            return;
+        }
+        const totalChunks = Math.ceil(totalSize / FLASH_READ_CHUNK_SIZE);
+        flashReadBase = parseUserLen(startInput.value);
+        flashHexBytes = new Array(totalSize).fill(0);
+        flashHexModified = new Set();
+        flashTotalPages = Math.ceil(totalSize / FLASH_PAGE_SIZE);
+        flashCurrentPage = 0;
+
+        /* optional: warn for large reads */
+        if (totalSize > 1024 * 1024 && !confirm(t("flash.confirm.chunk").replace("$1", totalChunks).replace("$2", bytesToHuman(totalSize))))
+            return;
+
+        for (var c = 0; c < totalChunks; c++) {
+            flashSetStatus(t("flash.status.reading") + " (" + (c + 1) + "/" + totalChunks + ")");
             const formData = new FormData();
-        formData.append("op", "read");
-        formData.append("storage", "auto");
-        formData.append("target", targetSelect.value);
-        formData.append("start", startInput.value);
-        formData.append("end", endInput.value);
+            formData.append("op", "read");
+            formData.append("storage", "auto");
+            formData.append("target", targetSelect.value);
+            formData.append("start", startInput.value);
+            formData.append("end", endInput.value);
+            formData.append("chunk", String(c));
             const response = await fetch("/flash/read", { method: "POST", body: formData });
             const responseText = await response.text();
-        if (!response.ok) {
-            flashSetStatus(t("flash.status.http") + " " + response.status + (responseText ? ": " + responseText : ""));
-            return;
+            if (!response.ok) {
+                flashSetStatus(t("flash.status.http") + " " + response.status + (responseText ? ": " + responseText : ""));
+                return;
+            }
+            var payload;
+            try { payload = JSON.parse(responseText); } catch (error) {
+                flashSetStatus(t("flash.status.error") + " parse");
+                return;
+            }
+            if (!payload || !payload.ok) {
+                flashSetStatus(t("flash.status.error") + " " + (payload && payload.error ? payload.error : ""));
+                return;
+            }
+            /* copy chunk data into full byte array */
+            var chunkBytes = flashHexStrToBytes(payload.data || "");
+            var chunkOffset = c * FLASH_READ_CHUNK_SIZE;
+            for (var i = 0; i < chunkBytes.length; i++)
+                flashHexBytes[chunkOffset + i] = chunkBytes[i];
+            /* render first page immediately so user sees something */
+            if (c === 0) {
+                flashSelectedByte = flashHexBytes.length > 0 ? 0 : -1;
+                flashSelectionStart = flashSelectedByte;
+                flashSelectionEnd = flashSelectedByte;
+                flashRenderHexGrid();
+                flashRenderHexViews();
+            }
         }
-            let payload;
-        try { payload = JSON.parse(responseText); } catch (error) { flashSetStatus(t("flash.status.error") + " parse"); return; }
-        if (!payload || !payload.ok) {
-            flashSetStatus(t("flash.status.error") + " " + (payload && payload.error ? payload.error : ""));
-            return;
-        }
-        dataElement && (dataElement.value = payload.data || "");
-        flashNormalizeHexInput();
-        flashSetStatus(t("flash.status.done"));
+        flashUpdatePageControls();
+        const pageCtl = document.getElementById("flash_page_controls");
+        if (pageCtl) pageCtl.style.display = flashTotalPages > 1 ? "flex" : "none";
+        flashSetStatus(t("flash.status.done") + " (" + flashHexBytes.length + " bytes)");
     } catch (error) {
         flashSetStatus(t("flash.status.error") + " " + (error && error.message ? error.message : String(error)));
     }
@@ -490,8 +746,7 @@ async function flashRead() {
 async function flashWrite() {
     const targetSelect = document.getElementById("flash_target");
     const startInput = document.getElementById("flash_start");
-    const dataElement = document.getElementById("flash_data");
-    if (!targetSelect || !startInput || !dataElement) return;
+    if (!targetSelect || !startInput) return;
     if (!targetSelect.value) {
         alert(t("flash.error.no_target"));
         return;
@@ -500,32 +755,62 @@ async function flashWrite() {
         alert(t("flash.error.bad_range"));
         return;
     }
-    if (!dataElement.value || !dataElement.value.trim()) {
+    if (flashHexBytes.length === 0) {
         alert(t("flash.error.no_data"));
         return;
     }
-    if (!confirm(t("flash.confirm.write"))) return;
+
+    const chunks = flashBuildWriteChunks();
+    if (chunks.length === 0) {
+        alert("No bytes modified since last read/write.");
+        return;
+    }
+
+    const totalModified = chunks.reduce(function (s, c) { return s + c.count; }, 0);
+    var confirmMsg = totalModified + " modified bytes in " + chunks.length + " block(s). Write?";
+    if (totalModified > 8192)
+        confirmMsg += "\n\nLarge writes may be slow and risky.";
+    if (!confirm(confirmMsg)) return;
+
     try {
-        flashSetStatus(t("flash.status.writing"));
-            const formData = new FormData();
-        formData.append("op", "write");
-        formData.append("storage", "auto");
-        formData.append("target", targetSelect.value);
-        formData.append("start", startInput.value);
-        formData.append("data", dataElement.value);
-            const response = await fetch("/flash/write", { method: "POST", body: formData });
-            const responseText = await response.text();
-        if (!response.ok) {
-            flashSetStatus(t("flash.status.http") + " " + response.status + (responseText ? ": " + responseText : ""));
-            return;
+        var written = 0;
+        for (var ci = 0; ci < chunks.length; ci++) {
+            var chunk = chunks[ci];
+            flashSetStatus("Writing block " + (ci + 1) + "/" + chunks.length + " (" + chunk.count + "B @ 0x" + (flashReadBase + chunk.start).toString(16) + ")");
+
+            var parts = [];
+            for (var j = chunk.start; j <= chunk.end; j++)
+                parts.push(flashPadHex(flashHexBytes[j], 2));
+            var hexStr = parts.join(" ");
+
+            var formData = new FormData();
+            formData.append("op", "write");
+            formData.append("storage", "auto");
+            formData.append("target", targetSelect.value);
+            formData.append("start", "0x" + (flashReadBase + chunk.start).toString(16));
+            formData.append("data", hexStr);
+
+            var response = await fetch("/flash/write", { method: "POST", body: formData });
+            var responseText = await response.text();
+            if (!response.ok) {
+                flashSetStatus("Block " + (ci + 1) + " failed: HTTP " + response.status);
+                return;
+            }
+            var payload;
+            try { payload = JSON.parse(responseText); } catch (e) {
+                flashSetStatus("Block " + (ci + 1) + " parse error");
+                return;
+            }
+            if (!payload || !payload.ok) {
+                flashSetStatus("Block " + (ci + 1) + " failed: " + (payload && payload.error ? payload.error : ""));
+                return;
+            }
+            written += chunk.count;
         }
-            let payload;
-        try { payload = JSON.parse(responseText); } catch (error) { flashSetStatus(t("flash.status.error") + " parse"); return; }
-        if (!payload || !payload.ok) {
-            flashSetStatus(t("flash.status.error") + " " + (payload && payload.error ? payload.error : ""));
-            return;
-        }
-        flashSetStatus(t("flash.status.done"));
+        flashHexModified = new Set();
+        flashRenderHexGrid();
+        flashRenderHexViews();
+        flashSetStatus("Written " + written + "B in " + chunks.length + " block(s)");
     } catch (error) {
         flashSetStatus(t("flash.status.error") + " " + (error && error.message ? error.message : String(error)));
     }

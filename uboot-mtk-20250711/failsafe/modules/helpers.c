@@ -320,6 +320,8 @@ int parse_u64_len(const char *s, u64 *out)
 int flash_open_target(const char *storage_sel, const char *target_name,
 		      struct flash_target *t)
 {
+	static bool mtd_probed;
+
 	if (!storage_sel || !target_name || !t)
 		return -EINVAL;
 
@@ -328,7 +330,10 @@ int flash_open_target(const char *storage_sel, const char *target_name,
 	if (!strcasecmp(storage_sel, "mtd") ||
 	    (!strcasecmp(storage_sel, "auto") && failsafe_mtd_part_exists(target_name))) {
 #ifdef CONFIG_MTD
-		gen_mtd_probe_devices();
+		if (!mtd_probed) {
+			gen_mtd_probe_devices();
+			mtd_probed = true;
+		}
 		t->mtd = get_mtd_device_nm(target_name);
 		if (IS_ERR(t->mtd)) {
 			t->mtd = NULL;

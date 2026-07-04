@@ -1439,7 +1439,11 @@ ul li {
 }
 
 .hex-offset-title,
-.hex-x-title,
+.hex-x-title {
+    white-space: nowrap;
+    padding-left: 13px;
+}
+
 .hex-ascii-title {
     white-space: nowrap;
 }
@@ -1467,10 +1471,9 @@ ul li {
     min-height: 220px;
 }
 
-.hex-input {
+.hex-grid {
     width: 100%;
     min-height: 220px;
-    resize: vertical;
     padding: 10px 12px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
@@ -1478,13 +1481,63 @@ ul li {
     color: var(--text);
     outline: none;
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     line-height: 1.55;
+    overflow: auto;
+    cursor: default;
 }
 
-.hex-input:focus {
+.hex-grid:focus-within {
     border-color: rgba(var(--primary-rgb), 0.55);
     box-shadow: var(--focus-ring);
+}
+
+.hex-row {
+    display: flex;
+}
+
+.hex-byte {
+    display: inline-block;
+    width: 3ch;
+    text-align: center;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: background 0.08s;
+}
+
+.hex-byte:hover {
+    background: rgba(var(--primary-rgb), 0.15);
+}
+
+.hex-byte.in-range {
+    background: rgba(var(--primary-rgb), 0.2);
+}
+
+.hex-byte.selected {
+    background: rgba(var(--primary-rgb), 0.4);
+    color: #fff;
+    outline: 1px solid rgba(var(--primary-rgb), 0.7);
+}
+
+.hex-byte.modified {
+    background: rgba(76, 175, 80, 0.35);
+    color: #fff;
+}
+
+.hex-byte.selected.modified {
+    background: #FF9800;
+}
+
+.hex-byte.in-range.modified {
+    background: rgba(76, 175, 80, 0.45);
+}
+
+.hex-overlay-input {
+    position: absolute;
+    left: -9999px;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
 }
 
 .hex-tools {
@@ -1497,6 +1550,30 @@ ul li {
     grid-template-columns: 1fr auto;
     gap: 10px;
     align-items: center;
+}
+
+.hex-page-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: min(720px, 100%);
+    margin: 8px auto 0;
+    padding: 4px 0;
+}
+
+.hex-page-controls .button-sm {
+    padding: 4px 14px;
+    font-size: 0.78rem;
+    min-width: 60px;
+}
+
+.page-info {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--muted);
+    min-width: 64px;
+    text-align: center;
 }
 
 /* ── Console ───────────────────────────────────────────────────── */
@@ -2117,7 +2194,7 @@ body[data-page="settings"] .upload-hero {
 
     .hex-offset,
     .hex-ascii,
-    .hex-input {
+    .hex-grid {
         min-height: 140px;
     }
 
