@@ -27,6 +27,20 @@ int failsafe_validate_image(const void *data, size_t size,
 int failsafe_write_image(const void *data, size_t size,
 			 failsafe_fw_t fw);
 
+/**
+ * failsafe_notify_network_cmd_done() - signal that a network command finished
+ *
+ * Called from telnetd after executing a network command (tftp, ping, etc.)
+ * whose inner net_loop() calls eth_halt() on exit.
+ *
+ * The poll loop responds by calling eth_init() OUTSIDE the eth_rx() →
+ * TCP callback chain, avoiding DMA receive-descriptor corruption that
+ * occurs when eth_init() is called inline from within a TCP callback.
+ * It also re-registers the DHCP UDP handler that net_clear_handlers()
+ * removed.
+ */
+void failsafe_notify_network_cmd_done(void);
+
 /* ------------------------------------------------------------------ */
 /*  Handler declarations (used by failsafe.c for URI registration)     */
 /* ------------------------------------------------------------------ */

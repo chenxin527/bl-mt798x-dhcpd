@@ -1450,7 +1450,8 @@ function upload(formFieldName) {
             const sizeElement = document.getElementById("size");
             if (sizeElement) {
                 sizeElement.style.display = "block";
-                sizeElement.innerHTML = `${t("label.size")}${sizeText}`;
+                const parsedSize = parseInt(sizeText, 10);
+                sizeElement.innerHTML = `${t("label.size")}${isFinite(parsedSize) ? bytesToHuman(parsedSize) : sizeText}`;
             }
 
             const md5Element = document.getElementById("md5");

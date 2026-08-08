@@ -24,6 +24,9 @@
 #ifdef CONFIG_MTK_DHCPD
 #include <net/mtk_dhcpd.h>
 #endif
+#ifdef CONFIG_MTK_DNSD
+#include <net/mtk_dnsd.h>
+#endif
 #ifdef CONFIG_MTK_TELNETD
 #include <net/mtk_telnetd.h>
 #endif
@@ -77,10 +80,14 @@ int __weak failsafe_write_image(const void *data, size_t size, failsafe_fw_t fw)
 /**
  * failsafe_notify_network_cmd_done() - signal that a network command finished
  *
- * Called from telnetd after executing a network command (tftp, ping, etc.)
- * that goes through net_loop().  The inner net_loop() calls eth_halt() on
- * completion, so we must reinitialize the ethernet device before the next
- * poll iteration.
+ * Called by telnetd (and potentially web console in the future) after
+ * run_command() executes a network command (tftp, ping, ...) whose inner
+ * net_loop() calls eth_halt() on exit.
+ *
+ * The poll loop responds by calling eth_init() to bring ethernet back up
+ * and re-registering the DHCP UDP handler.  These operations MUST happen
+ * at the poll-loop level, OUTSIDE the eth_rx() → TCP callback chain, to
+ * avoid corrupting the DMA receive-descriptor state.
  */
 void failsafe_notify_network_cmd_done(void)
 {
@@ -196,6 +203,10 @@ int start_web_failsafe(void)
 	mtk_dhcpd_start();
 	printf("[FAILSAFE] DHCP server started\n");
 #endif
+#ifdef CONFIG_MTK_DNSD
+	mtk_dnsd_start();
+	printf("[FAILSAFE] DNS server started\n");
+#endif
 
 	/*
 	 * Non-blocking poll loop.  We call eth_rx() and
@@ -207,11 +218,16 @@ int start_web_failsafe(void)
 	 * The loop exits when:
 	 *   - Ctrl+C is pressed, or
 	 *   - all TCP listeners and connections are gone (mtk_tcp_done_flag).
+	 *   - an auto-action (initramfs boot / firmware flash) is pending.
 	 *
 	 * When telnetd runs a network command (tftp, ping, …) the inner
-	 * net_loop() halts ethernet on completion.  We detect the
-	 * eth_needs_reinit flag and call eth_init() to restart it
-	 * before the next poll.
+	 * net_loop() calls eth_halt() on exit.  telnetd sets the
+	 * eth_needs_reinit flag (via failsafe_notify_network_cmd_done)
+	 * instead of calling eth_init() inline, because the inline call
+	 * would be inside the outer eth_rx() → TCP callback chain and
+	 * corrupt DMA receive descriptors.  We call eth_init() here at the
+	 * poll-loop level, safely outside the callback chain, and also
+	 * re-register the DHCP handler that net_clear_handlers() removed.
 	 */
 	printf("[FAILSAFE] entering poll loop, done_flag=%d\n", mtk_tcp_done_flag);
 	while (!ctrlc() && !mtk_tcp_done_flag && !auto_action_pending) {
@@ -219,6 +235,9 @@ int start_web_failsafe(void)
 
 #ifdef CONFIG_MTK_DHCPD
 		need_poll = need_poll || mtk_dhcpd_is_running();
+#endif
+#ifdef CONFIG_MTK_DNSD
+		need_poll = need_poll || mtk_dnsd_is_running();
 #endif
 
 		if (!services_auto_started && !failsafe_httpd_running) {
@@ -230,28 +249,42 @@ int start_web_failsafe(void)
 				need_poll = true;
 			}
 #endif
+#ifdef CONFIG_MTK_DNSD
+			if (!mtk_dnsd_is_running()) {
+				printf("Starting DNS server...\n");
+				mtk_dnsd_start();
+				need_poll = true;
+			}
+#endif
 		}
 
 		if (need_poll) {
 #if defined(CONFIG_MTK_TCP)
 			/*
-			 * Reinitialize ethernet if it was halted by an
-			 * inner net_loop() (e.g. tftp/ping executed from
-			 * the telnet console).
+			 * Network-command recovery: when telnetd (or
+			 * future web-console) executes a network command
+			 * whose inner net_loop() calls eth_halt(), the
+			 * eth_needs_reinit flag is set.
 			 *
-			 * net_loop() also calls net_clear_handlers() on
-			 * exit, which removes the DHCP UDP handler.  We
-			 * must re-register it after bringing ethernet back
-			 * up, otherwise DHCP requests will be silently
-			 * dropped.
+			 * We MUST call eth_init() here at the poll-loop
+			 * level rather than inside the TCP callback chain,
+			 * because the callback runs inside eth_rx() and
+			 * calling eth_init() inline would corrupt the
+			 * outer eth_rx()'s DMA descriptor iteration.
+			 *
+			 * net_loop() also calls net_clear_handlers() which
+			 * removes the DHCP UDP handler — re-register it.
 			 */
 			if (eth_needs_reinit) {
 				eth_needs_reinit = false;
 				eth_init();
 #ifdef CONFIG_MTK_DHCPD
-				/* Re-register DHCP handler cleared by net_loop() */
 				if (mtk_dhcpd_is_running())
 					mtk_dhcpd_start();
+#endif
+#ifdef CONFIG_MTK_DNSD
+				if (mtk_dnsd_is_running())
+					mtk_dnsd_start();
 #endif
 			}
 

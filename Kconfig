@@ -136,9 +136,29 @@ config TELNETD
 	  over the network.
 	  Useful for debugging, but do not enable it on untrusted networks.
 
+config NAND_RAW
+	bool "Enable NAND raw/OOB backup and flash (DANGEROUS)"
+	default n
+	help
+	  Enable NAND raw mode in backup and flash editor that reads/writes
+	  pages including OOB (Out-Of-Band) spare area data via MTD_OPS_RAW.
+
+	  This preserves ECC layout and is required for byte-exact NAND dumps.
+
+	  WARNING: Raw mode requires significantly more memory (page_size +
+	  oob_size per page) and is only available on NAND flash devices.
+
 config COPY_BL2
 	bool "Copy BL2 after build"
 	default y
+
+config COMPRESS_FIP
+	bool "Compress FIP images (XZ)"
+	default y
+	help
+	  Compress BL31 and BL33 (U-Boot) inside FIP using XZ compression.
+	  Reduces fip.bin size by ~60%. Requires no BL2 change — decompressor
+	  is already built into BL2 and fallbacks to memcpy for non-compressed data.
 
 config SILENT
 	bool "Run scripts in silent mode"

@@ -61,6 +61,13 @@ function consoleInit() {
     function appendText(text) {
         if (!outputElement) return;
         if (!text) return;
+        /*
+         * Normalize line endings: U-Boot uses \r\n; CSS white-space:pre-wrap
+         * honours \r as a real carriage-return, which can overwrite text
+         * when \r\n is split across poll boundaries.
+         * Convert \r\n→\n first, then any remaining \r→\n.
+         */
+        text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         outputElement.textContent += text;
         if (outputElement.textContent.length > persistMax) outputElement.textContent = outputElement.textContent.slice(outputElement.textContent.length - persistMax);
         savePersistedOutput();
@@ -86,6 +93,9 @@ function consoleInit() {
                 return;
             }
             payload && payload.data && appendText(payload.data);
+            if (payload && payload.overflow) {
+                setStatus(String.fromCodePoint(0x26A0) + " " + t("console.status.overflow"));
+            }
         } catch (error) {
             setStatus(t("console.status.error") + " " + (error && error.message ? error.message : String(error)));
         }

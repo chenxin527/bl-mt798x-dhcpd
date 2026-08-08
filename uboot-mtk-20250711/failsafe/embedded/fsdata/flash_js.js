@@ -572,10 +572,11 @@ function flashInit() {
         const selectedFile = backupInput.files && backupInput.files.length ? backupInput.files[0] : null;
         const parsedBackup = selectedFile ? flashParseBackupFilename(selectedFile.name) : null;
         if (!parsedBackup) {
-            restoreInfoElement && (restoreInfoElement.textContent = t("flash.detected.none"));
+            restoreInfoElement && (restoreInfoElement.textContent = t("flash.detected.none") +
+                (selectedFile ? ` (${bytesToHuman(selectedFile.size)})` : ""));
             return;
         }
-        restoreInfoElement && (restoreInfoElement.textContent = `${parsedBackup.storage}:${parsedBackup.target} 0x${parsedBackup.start.toString(16)}-0x${parsedBackup.end.toString(16)}`);
+        restoreInfoElement && (restoreInfoElement.textContent = `${parsedBackup.storage}:${parsedBackup.target} 0x${parsedBackup.start.toString(16)}-0x${parsedBackup.end.toString(16)} (${bytesToHuman(selectedFile.size)})`);
         flashSelectTarget(`${parsedBackup.storage}:${parsedBackup.target}`);
         if (startInput) startInput.value = `0x${parsedBackup.start.toString(16)}`;
         if (endInput) endInput.value = `0x${parsedBackup.end.toString(16)}`;
@@ -737,7 +738,7 @@ async function flashRead() {
         flashUpdatePageControls();
         const pageCtl = document.getElementById("flash_page_controls");
         if (pageCtl) pageCtl.style.display = flashTotalPages > 1 ? "flex" : "none";
-        flashSetStatus(t("flash.status.done") + " (" + flashHexBytes.length + " bytes)");
+        flashSetStatus(t("flash.status.done") + " (" + bytesToHuman(flashHexBytes.length) + ")");
     } catch (error) {
         flashSetStatus(t("flash.status.error") + " " + (error && error.message ? error.message : String(error)));
     }
@@ -767,7 +768,7 @@ async function flashWrite() {
     }
 
     const totalModified = chunks.reduce(function (s, c) { return s + c.count; }, 0);
-    var confirmMsg = totalModified + " modified bytes in " + chunks.length + " block(s). Write?";
+    var confirmMsg = bytesToHuman(totalModified) + " modified in " + chunks.length + " block(s). Write?";
     if (totalModified > 8192)
         confirmMsg += "\n\nLarge writes may be slow and risky.";
     if (!confirm(confirmMsg)) return;
@@ -810,7 +811,7 @@ async function flashWrite() {
         flashHexModified = new Set();
         flashRenderHexGrid();
         flashRenderHexViews();
-        flashSetStatus("Written " + written + "B in " + chunks.length + " block(s)");
+        flashSetStatus("Written " + bytesToHuman(written) + " in " + chunks.length + " block(s)");
     } catch (error) {
         flashSetStatus(t("flash.status.error") + " " + (error && error.message ? error.message : String(error)));
     }

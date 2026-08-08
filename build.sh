@@ -25,7 +25,9 @@ multilayout=${MULTI_LAYOUT:-0}
 simg=${SIMG:-0}
 UBIMNG=${UBIMNG:-0}
 TELNETD=${TELNETD:-0}
+NAND_RAW=${NAND_RAW:-0}
 COPY_BL2=${COPY_BL2:-1}
+FIP_COMPRESS=${FIP_COMPRESS:-0}
 clean_mode=0
 
 print_help() {
@@ -51,7 +53,10 @@ Optional:
   SIMG                Enable failsafe SIMG support: 0 | 1       (default: 0)
   UBIMNG              Enable failsafe UBI management: 0 | 1     (default: 0)
   TELNETD             Enable telnetd: 0 | 1                     (default: 0)
+  NAND_RAW            Enable NAND raw OOB backup: 0 | 1          (default: 0)
   COPY_BL2            Copy bl2.img to output/: 0 | 1            (default: 1)
+  FIP_COMPRESS        Enable FIP image compression (XZ): 0 | 1  (default: 0)
+                      Compresses BL31, BL33 inside FIP to reduce file size
 
 Options:
   --clean, -c         Distclean all source directories and exit
@@ -355,8 +360,11 @@ echo "U-Boot Dir: $UBOOT_DIR"
 echo "ATF CFG: $ATF_CFG_PATH"
 echo "U-Boot CFG: $UBOOT_CFG_PATH"
 echo "Features: fixed-mtdparts: $fixedparts, multi-layout: $multilayout"
-echo "Failsafe: theme: $FSTHEME, simg support: $simg, ubi manger support: $UBIMNG, telnetd: $TELNETD"
+echo "Failsafe theme: $FSTHEME"
+echo "Failsafe functions: SIMG support: $simg, UBI Management support: $UBIMNG"
+echo "Telnetd support: $TELNETD, NAND RAW R/W support: $NAND_RAW"
 echo "COPY BL2: $COPY_BL2"
+echo "FIP Compression: $FIP_COMPRESS"
 
 echo "======================================================================"
 echo "Build u-boot..."
@@ -396,6 +404,10 @@ if [ "$TELNETD" = "1" ]; then
 	echo "Build u-boot with telnetd support!"
 	echo "CONFIG_MTK_TELNETD=y" >> "$UBOOT_DIR/.config"
 fi
+if [ "$NAND_RAW" = "1" ]; then
+	echo "Build u-boot with NAND raw OOB backup support!"
+	echo "CONFIG_WEBUI_FAILSAFE_NAND_RAW=y" >> "$UBOOT_DIR/.config"
+fi
 
 make -C "$UBOOT_DIR" olddefconfig
 make -C "$UBOOT_DIR" clean
@@ -430,9 +442,14 @@ fi
 make -C "$ATF_DIR" -f "$ATF_MKFILE" clean CONFIG_CROSS_COMPILER="$TOOLCHAIN" CROSS_COMPILER="$TOOLCHAIN"
 rm -rf "$ATF_DIR/build"
 make -C "$ATF_DIR" -f "$ATF_MKFILE" "$ATF_CFG_TARGET" CONFIG_CROSS_COMPILER="$TOOLCHAIN" CROSS_COMPILER="$TOOLCHAIN"
+if [ "$FIP_COMPRESS" = "1" ]; then
+	echo "Enable FIP compression (XZ)..."
+	sed -i 's/# _ENABLE_FIP_COMPRESS is not set/_ENABLE_FIP_COMPRESS=y/' "$ATF_DIR/build/.config"
+	printf 'FIP_COMPRESS=1\n' >> "$ATF_DIR/build/.config"
+fi
 make -C "$ATF_DIR" -f "$ATF_MKFILE" all CONFIG_CROSS_COMPILER="$TOOLCHAIN" CROSS_COMPILER="$TOOLCHAIN" CONFIG_BL33="../$UBOOT_DIR/u-boot.bin" BL33="../$UBOOT_DIR/u-boot.bin" -j $(nproc)
 if [ -n "$ATF_CFG_STAGE_FILE" ] && [ -f "$ATF_CFG_STAGE_FILE" ]; then
-	rm -f "$ATF_CFG_STAGE_FILE"
+	rm -f "$ATF_CFG_STAGE_FILE"fi
 fi
 
 echo "======================================================================"
@@ -459,6 +476,9 @@ if [ -f "$ATF_DIR/build/${SOC}/release/fip.bin" ]; then
 	fi
 	if [ "$multilayout" = "1" ]; then
 		FIP_NAME="${FIP_NAME}-multi-layout"
+	fi
+	if [ "$FIP_COMPRESS" = "1" ]; then
+		FIP_NAME="${FIP_NAME}-fipc"
 	fi
 	FIP_MD5=$(md5sum "$ATF_DIR/build/${SOC}/release/fip.bin" | awk '{print $1}')
 	FIP_NAME="${FIP_NAME}_md5-${FIP_MD5}"

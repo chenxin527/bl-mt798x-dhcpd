@@ -48,6 +48,10 @@ function backupRefreshI18n() {
             const mtdName = optionElement.dataset.mtdName || "";
             optionElement.textContent = `[MTD] ${window.t("backup.target.full_disk")}${mtdName ? ` (${mtdName})` : ""}${optionElement.dataset.size ? ` (${bytesToHuman(parseInt(optionElement.dataset.size, 10))})` : ""}`;
         }
+        if (optionElement.dataset.kind === "mtd-oob") {
+            const mtdName = optionElement.dataset.mtdName || "";
+            optionElement.textContent = `[MTD] ${window.t("backup.target.full_disk")}${mtdName ? ` (${mtdName})` : ""} (OOB${optionElement.dataset.size ? ` ${bytesToHuman(parseInt(optionElement.dataset.size, 10))}` : ""})`;
+        }
     }
 }
 
@@ -58,6 +62,10 @@ function backupInit() {
     const targetField = document.getElementById("backup_target_field");
     const targetRow = document.getElementById("backup_mode_target_row");
     let updateBackupUi, startInput, endInput;
+    let backupInfoData = null;
+    let nandRawSize = 0;
+    let ramAvailable = 0;
+
     function selectTargetByValue(targetValue) {
         for (let optionIndex = 0; optionIndex < targetSelect.options.length; optionIndex++) if (targetSelect.options[optionIndex].value === targetValue) return targetSelect.selectedIndex = optionIndex, true;
         return false
@@ -84,7 +92,7 @@ function backupInit() {
         const isRangeMode = modeSelect.value === "range";
         isRangeMode ? (rangeContainer.style.display = "block", ensureValidTargetSelection(), backupUpdateRangeHint()) : (rangeContainer.style.display = "none");
         targetField && (targetField.style.display = isRangeMode ? "none" : "");
-        targetRow && (targetRow.style.gridTemplateColumns = isRangeMode ? "1fr" : "")
+        targetRow && (targetRow.style.gridTemplateColumns = isRangeMode ? "1fr" : "");
     }, modeSelect.onchange = updateBackupUi, startInput = document.getElementById("backup_start"), endInput = document.getElementById("backup_end"), startInput && (startInput.oninput = backupUpdateRangeHint), endInput && (endInput.oninput = backupUpdateRangeHint), updateBackupUi(), setBackupStatus(""), ajax({
         url: "/backup/info",
         done: function (responseText) {
@@ -99,6 +107,14 @@ function backupInit() {
                 setBackupStatus("backupinfo parse failed");
                 return
             }
+            backupInfoData = backupInfo;
+
+            // Store NAND raw metadata
+            if (backupInfo.mtd && backupInfo.mtd.nand_raw_size) {
+                nandRawSize = backupInfo.mtd.nand_raw_size;
+                ramAvailable = backupInfo.mtd.ram_available || 0;
+            }
+
             infoElement = document.getElementById("backup_info");
             infoElement && (optionElement = [], backupInfo.mmc && backupInfo.mmc.present ? optionElement.push("MMC: " + (backupInfo.mmc.vendor || "") + " " + (backupInfo.mmc.product || "")) : optionElement.push("MMC: " + t("backup.storage.not_present")), backupInfo.mtd && backupInfo.mtd.present ? optionElement.push("MTD: " + (backupInfo.mtd.model || "")) : optionElement.push("MTD: " + t("backup.storage.not_present")), infoElement.textContent = optionElement.join(" | "));
             targetSelect.options.length = 0;
@@ -125,7 +141,19 @@ function backupInit() {
                     fullDiskOptionElement.dataset.mtdName = partition.name;
                     fullDiskOptionElement.dataset.size = partition.size ? String(partition.size) : "";
                     fullDiskOptionElement.dataset.kind = "mtd-full";
-                    targetSelect.appendChild(fullDiskOptionElement)
+                    targetSelect.appendChild(fullDiskOptionElement);
+
+                    /* OOB raw dump option — only for physical NAND, skip NMBM layer */
+                    if (nandRawSize > 0 && ramAvailable > 0 && nandRawSize <= ramAvailable
+                        && !partition.name.startsWith("nmbm")) {
+                        const oobOptionElement = document.createElement("option");
+                        oobOptionElement.value = "mtd:" + partition.name;
+                        oobOptionElement.dataset.mtdName = partition.name;
+                        oobOptionElement.dataset.size = String(nandRawSize);
+                        oobOptionElement.dataset.kind = "mtd-oob";
+                        oobOptionElement.dataset.raw = "1";
+                        targetSelect.appendChild(oobOptionElement);
+                    }
                 });
 
                 backupInfo.mtd.parts.forEach(function (partition) {
@@ -141,7 +169,7 @@ function backupInit() {
             }
             targetSelect.options.length > 1 && (targetSelect.selectedIndex = 1);
             backupRefreshI18n();
-            updateBackupUi && updateBackupUi()
+            updateBackupUi && updateBackupUi();
         }
     }))
 }
@@ -150,6 +178,7 @@ async function startBackup() {
     const modeSelect = document.getElementById("backup_mode");
     const targetSelect = document.getElementById("backup_target");
     let backupMode, targetValue, formData, response, contentLength, expectedLength, downloadName, downloadedBytes, saveHandle, writableStream, reader, chunk, bufferedChunks;
+    let isRawMode = false;
     if (!modeSelect || !targetSelect) return;
     backupMode = modeSelect.value;
     targetValue = targetSelect.value;
@@ -157,10 +186,20 @@ async function startBackup() {
         alert(t("backup.error.no_target"));
         return;
     }
+
+    /* Detect OOB mode from target option data-raw attribute */
+    {
+        const selOpt = targetSelect.options[targetSelect.selectedIndex];
+        if (selOpt && selOpt.dataset && selOpt.dataset.raw === "1")
+            isRawMode = true;
+    }
+
     formData = new FormData();
     formData.append("mode", backupMode);
     formData.append("storage", "auto");
     formData.append("target", targetValue);
+    if (isRawMode)
+        formData.append("raw", "1");
     if (backupMode === "range") {
         const startInput = document.getElementById("backup_start");
         const endInput = document.getElementById("backup_end");

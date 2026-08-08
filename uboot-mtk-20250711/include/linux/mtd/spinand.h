@@ -299,12 +299,14 @@ struct spinand_manufacturer {
 /* SPI NAND manufacturers */
 extern const struct spinand_manufacturer alliancememory_spinand_manufacturer;
 extern const struct spinand_manufacturer ato_spinand_manufacturer;
+extern const struct spinand_manufacturer ato_ad_spinand_manufacturer;
 extern const struct spinand_manufacturer biwin_spinand_manufacturer;
 extern const struct spinand_manufacturer chucun_spinand_manufacturer;
 extern const struct spinand_manufacturer dosilicon_spinand_manufacturer;
 extern const struct spinand_manufacturer esmt_8c_spinand_manufacturer;
 extern const struct spinand_manufacturer esmt_c8_spinand_manufacturer;
 extern const struct spinand_manufacturer etron_spinand_manufacturer;
+extern const struct spinand_manufacturer fison_spinand_manufacturer;
 extern const struct spinand_manufacturer fmsh_spinand_manufacturer;
 extern const struct spinand_manufacturer foresee_spinand_manufacturer;
 extern const struct spinand_manufacturer gigadevice_spinand_manufacturer;
@@ -317,8 +319,10 @@ extern const struct spinand_manufacturer kingston_spinand_manufacturer;
 extern const struct spinand_manufacturer macronix_spinand_manufacturer;
 extern const struct spinand_manufacturer micron_spinand_manufacturer;
 extern const struct spinand_manufacturer mk_spinand_manufacturer;
+extern const struct spinand_manufacturer mira_spinand_manufacturer;
 extern const struct spinand_manufacturer paragon_spinand_manufacturer;
 extern const struct spinand_manufacturer toshiba_spinand_manufacturer;
+extern const struct spinand_manufacturer tym_spinand_manufacturer;
 extern const struct spinand_manufacturer silicongo_spinand_manufacturer;
 extern const struct spinand_manufacturer skyhigh_spinand_manufacturer;
 extern const struct spinand_manufacturer titan_spinand_manufacturer;
@@ -330,6 +334,7 @@ extern const struct spinand_manufacturer xincun_spinand_manufacturer;
 extern const struct spinand_manufacturer xincun_6c_spinand_manufacturer;
 extern const struct spinand_manufacturer xtx_spinand_manufacturer;
 extern const struct spinand_manufacturer zbit_spinand_manufacturer;
+extern const struct spinand_manufacturer zentel_spinand_manufacturer;
 
 
 /**

@@ -307,13 +307,13 @@ done:
 	if (mtd) {
 		snprintf(mtd_layout_label, sizeof(mtd_layout_label),
 			 "%s", mtd->data);
-		snprintf(resp, sizeof(resp), "%ld %s %s", fw->size, md5_str,
+		snprintf(resp, sizeof(resp), "%zu %s %s", fw->size, md5_str,
 			 mtd_layout_label);
 	} else {
-		snprintf(resp, sizeof(resp), "%ld %s", fw->size, md5_str);
+		snprintf(resp, sizeof(resp), "%zu %s", fw->size, md5_str);
 	}
 #else
-	snprintf(resp, sizeof(resp), "%ld %s", fw->size, md5_str);
+	snprintf(resp, sizeof(resp), "%zu %s", fw->size, md5_str);
 #endif
 
 	response->data = resp;

@@ -17,7 +17,10 @@
 #include <linux/string.h>
 #include <linux/ctype.h>
 #include <vsprintf.h>
+#include <asm/global_data.h>
 #include <net/mtk_httpd.h>
+
+DECLARE_GLOBAL_DATA_PTR;
 
 #ifdef CONFIG_MTD
 #include <linux/mtd/mtd.h>
@@ -37,6 +40,10 @@
 
 #include "../failsafe_internal.h"
 
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+#include "nand_raw.h"
+#endif
+
 enum backup_phase {
 	BACKUP_PHASE_HDR = 0,
 	BACKUP_PHASE_DATA = 1,
@@ -51,6 +58,9 @@ struct backup_session {
 	u64 total;
 	u64 cur;
 	u64 target_size;
+
+	bool raw;
+	size_t raw_page_sz;
 
 	char filename[128];
 	char hdr[512];
@@ -70,6 +80,7 @@ struct backup_session {
 };
 
 #ifdef CONFIG_MTD
+#if IS_ENABLED(CONFIG_MTD_SPI_NAND)
 static const struct spinand_info *failsafe_spinand_match_info(struct spinand_device *spinand)
 {
 	size_t i;
@@ -101,6 +112,7 @@ static const struct spinand_info *failsafe_spinand_match_info(struct spinand_dev
 
 	return NULL;
 }
+#endif /* CONFIG_MTD_SPI_NAND */
 
 static const char *failsafe_get_mtd_chip_model(struct mtd_info *mtd, char *out, size_t out_sz)
 {
@@ -300,6 +312,51 @@ void backupinfo_handler(enum httpd_uri_handler_status status,
 			present ? "true" : "false",
 			model ? model : "", type);
 
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		/* NAND raw metadata — re-open master to read info */
+		{
+			u64 raw_sz = 0;
+			u32 oob_sz = 0, page_sz = 0;
+			const char *ntype = "none";
+
+			sel = NULL;
+			for (i = 0; i < 64; i++) {
+				mtd = get_mtd_device(NULL, i);
+				if (IS_ERR(mtd))
+					continue;
+
+				if (!mtd->parent) {
+					sel = mtd;
+					break;
+				}
+				put_mtd_device(mtd);
+			}
+
+			if (sel && !IS_ERR(sel)) {
+				raw_sz = nand_raw_total_size(sel);
+				if (nand_raw_is_nand(sel)) {
+					oob_sz = sel->oobsize;
+					page_sz = sel->writesize;
+					ntype = "spi";
+				}
+				put_mtd_device(sel);
+			}
+
+			/* RAM available for upload buffer */
+			{
+				u64 ram_avail = gd ? gd->ram_size : 0;
+
+				len += snprintf(buf + len, left - len,
+					"\"nand_raw_size\":%llu,\"nand_oob_size\":%u,\"nand_page_size\":%u,\"nand_type\":\"%s\",\"ram_available\":%llu,",
+					(unsigned long long)raw_sz, oob_sz, page_sz,
+					ntype, (unsigned long long)ram_avail);
+			}
+		}
+#else
+		len += snprintf(buf + len, left - len,
+			"\"nand_raw_size\":0,\"nand_oob_size\":0,\"nand_page_size\":0,\"nand_type\":\"none\",\"ram_available\":0,");
+#endif
+
 		len += snprintf(buf + len, left - len, "\"parts\":[");
 		for (i = 0; i < 64 && len < left - 128; i++) {
 			mtd = get_mtd_device(NULL, i);
@@ -357,11 +414,16 @@ void backup_handler(enum httpd_uri_handler_status status,
 	}
 
 	if (status == HTTP_CB_NEW) {
-		struct httpd_form_value *mode, *start, *end;
+		struct httpd_form_value *mode, *start, *end, *rawv;
+		bool raw_mode = false;
 
 		mode = httpd_request_find_value(request, "mode");
 		start = httpd_request_find_value(request, "start");
 		end = httpd_request_find_value(request, "end");
+		rawv = httpd_request_find_value(request, "raw");
+
+		if (rawv && rawv->data && !strcmp(rawv->data, "1"))
+			raw_mode = true;
 
 		ret = flash_parse_storage_target(request, storage_sel,
 						  sizeof(storage_sel),
@@ -421,6 +483,43 @@ void backup_handler(enum httpd_uri_handler_status status,
 #endif
 		flash_close_target(&tgt);
 
+		/* --- Raw NAND mode initialization --- */
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		if (raw_mode && st->src == FAILSAFE_SRC_MTD) {
+			if (!nand_raw_is_nand(st->mtd)) {
+				put_mtd_device(st->mtd);
+				st->mtd = NULL;
+				free(st->buf);
+				free(st);
+				failsafe_http_reply_text(response, 400,
+					"raw mode requires NAND device");
+				return;
+			}
+
+			st->raw = true;
+			st->raw_page_sz = nand_raw_page_size(st->mtd);
+			if (!st->raw_page_sz)
+				goto bad_range;
+
+			/* Align buf_size to raw_page_sz multiples */
+			st->buf_size = (st->buf_size / st->raw_page_sz) * st->raw_page_sz;
+			if (st->buf_size < st->raw_page_sz) {
+				st->buf_size = st->raw_page_sz;
+				free(st->buf);
+				st->buf = malloc(st->buf_size);
+				if (!st->buf) {
+					put_mtd_device(st->mtd);
+					st->mtd = NULL;
+					free(st);
+					goto oom;
+				}
+			}
+
+			/* Recalculate target size: raw output size */
+			st->target_size = nand_raw_total_size(st->mtd);
+		}
+#endif
+
 		/* range normalization */
 		if (off_end == ULLONG_MAX)
 			off_end = st->target_size;
@@ -458,10 +557,11 @@ void backup_handler(enum httpd_uri_handler_status status,
 			failsafe_str_sanitize(target_name);
 
 			snprintf(st->filename, sizeof(st->filename),
-				"backup_%s_%s_%s_0x%llx-0x%llx.bin",
+				"backup_%s_%s_%s%s_0x%llx-0x%llx.bin",
 				stype,
 				model[0] ? model : "device",
 				target_name,
+				st->raw ? "_oob" : "",
 				(unsigned long long)st->start,
 				(unsigned long long)st->end);
 		}
@@ -508,16 +608,38 @@ void backup_handler(enum httpd_uri_handler_status status,
 
 		if (st->src == FAILSAFE_SRC_MTD) {
 #ifdef CONFIG_MTD
-			size_t readsz = 0;
+			if (st->raw) {
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+				u64 first_page, pages_to_read;
+				size_t actual;
 
-			ret = mtd_read_skip_bad(st->mtd, st->start + st->cur,
-					to_read,
-					st->mtd->size - (st->start + st->cur),
-					&readsz, st->buf);
-			if (ret)
+				/* Align to raw page boundary */
+				first_page = (st->start + st->cur) / st->raw_page_sz;
+				pages_to_read = to_read / st->raw_page_sz;
+				if (!pages_to_read)
+					pages_to_read = 1;
+
+				ret = nand_raw_read_pages(st->mtd, first_page,
+					pages_to_read, st->buf, st->buf_size, &actual);
+				if (ret)
+					goto io_err;
+
+				got = actual;
+#else
 				goto io_err;
+#endif
+			} else {
+				size_t readsz = 0;
 
-			got = readsz;
+				ret = mtd_read_skip_bad(st->mtd, st->start + st->cur,
+						to_read,
+						st->mtd->size - (st->start + st->cur),
+						&readsz, st->buf);
+				if (ret)
+					goto io_err;
+
+				got = readsz;
+			}
 #else
 			goto io_err;
 #endif

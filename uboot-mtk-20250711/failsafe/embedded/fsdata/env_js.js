@@ -131,11 +131,12 @@ function envInit() {
             alert(t("env.error.no_file"));
             return;
         }
-        if (!confirm(t("env.confirm.restore")))
+        const restoreFile = fileInput.files[0];
+        if (!confirm(t("env.confirm.restore") + " (" + bytesToHuman(restoreFile.size) + ")"))
             return;
         try {
             const formData = new FormData();
-            formData.append("envfile", fileInput.files[0]);
+            formData.append("envfile", restoreFile);
             setStatus(t("env.status.saving"));
             const response = await fetch("/env/restore", { method: "POST", body: formData });
             const responseText = await response.text();

@@ -37,6 +37,10 @@
 
 #include "../failsafe_internal.h"
 
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+#include "nand_raw.h"
+#endif
+
 /* Max bytes to read per /flash/read request in chunked mode.
  * Each chunk is hex-encoded (3× expansion) + JSON overhead,
  * so 256 KiB → ~770 KiB JSON, safe for U‑Boot's heap.
@@ -455,6 +459,9 @@ void flash_handler(enum httpd_uri_handler_status status,
 
 	if (!strcmp(op, "read")) {
 		struct httpd_form_value *startv, *endv, *chunkv;
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		struct httpd_form_value *rawv;
+#endif
 		struct flash_target tgt;
 		u8 *buf = NULL;
 		char *hex = NULL;
@@ -462,6 +469,9 @@ void flash_handler(enum httpd_uri_handler_status status,
 		u64 read_start;
 		int chunk = -1;
 		bool has_chunk;
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		bool raw_mode = false;
+#endif
 
 		ret = flash_parse_storage_target(request, storage_sel,
 						  sizeof(storage_sel),
@@ -501,6 +511,12 @@ void flash_handler(enum httpd_uri_handler_status status,
 		if (!read_len)
 			goto bad_req;
 
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		rawv = httpd_request_find_value(request, "raw");
+		if (rawv && rawv->data && !strcmp(rawv->data, "1"))
+			raw_mode = true;
+#endif
+
 		ret = flash_open_target(storage_sel, target_name, &tgt);
 		if (ret)
 			goto bad_target;
@@ -510,41 +526,74 @@ void flash_handler(enum httpd_uri_handler_status status,
 			goto bad_range;
 		}
 
-		buf = malloc(read_len);
-		if (!buf) {
-			flash_close_target(&tgt);
-			goto oom;
-		}
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		if (raw_mode && tgt.src == FAILSAFE_SRC_MTD) {
+			size_t rps = nand_raw_page_size(tgt.mtd);
+			u64 first_page, pages_to_read;
+			size_t actual;
 
-		if (tgt.src == FAILSAFE_SRC_MTD) {
-#ifdef CONFIG_MTD
-			size_t readsz = 0;
-			ret = mtd_read_skip_bad(tgt.mtd, read_start, read_len,
-				tgt.mtd->size - read_start, &readsz, buf);
-			if (ret || readsz != read_len) {
-				free(buf);
+			if (!rps || !nand_raw_is_nand(tgt.mtd)) {
 				flash_close_target(&tgt);
-				goto io_err;
+				goto bad_req;
 			}
-#else
-			free(buf);
-			flash_close_target(&tgt);
-			goto bad_target;
-#endif
-		} else {
-#ifdef CONFIG_MTK_BOOTMENU_MMC
-			ret = mmc_read_generic(CONFIG_MTK_BOOTMENU_MMC_DEV_INDEX, 0,
-				tgt.base + read_start, buf, read_len);
+
+			first_page = read_start / rps;
+			pages_to_read = (read_len + rps - 1) / rps;
+			read_len = (size_t)(pages_to_read * rps);
+
+			buf = malloc(read_len);
+			if (!buf) {
+				flash_close_target(&tgt);
+				goto oom;
+			}
+
+			ret = nand_raw_read_pages(tgt.mtd, first_page,
+				pages_to_read, buf, read_len, &actual);
 			if (ret) {
 				free(buf);
 				flash_close_target(&tgt);
 				goto io_err;
 			}
-#else
-			free(buf);
-			flash_close_target(&tgt);
-			goto bad_target;
+			read_len = actual;
+		} else
 #endif
+		{
+			buf = malloc(read_len);
+			if (!buf) {
+				flash_close_target(&tgt);
+				goto oom;
+			}
+
+			if (tgt.src == FAILSAFE_SRC_MTD) {
+#ifdef CONFIG_MTD
+				size_t readsz = 0;
+				ret = mtd_read_skip_bad(tgt.mtd, read_start, read_len,
+					tgt.mtd->size - read_start, &readsz, buf);
+				if (ret || readsz != read_len) {
+					free(buf);
+					flash_close_target(&tgt);
+					goto io_err;
+				}
+#else
+				free(buf);
+				flash_close_target(&tgt);
+				goto bad_target;
+#endif
+			} else {
+#ifdef CONFIG_MTK_BOOTMENU_MMC
+				ret = mmc_read_generic(CONFIG_MTK_BOOTMENU_MMC_DEV_INDEX, 0,
+					tgt.base + read_start, buf, read_len);
+				if (ret) {
+					free(buf);
+					flash_close_target(&tgt);
+					goto io_err;
+				}
+#else
+				free(buf);
+				flash_close_target(&tgt);
+				goto bad_target;
+#endif
+			}
 		}
 
 		hex = flash_hex_dump(buf, read_len, &hex_len);
@@ -588,9 +637,15 @@ void flash_handler(enum httpd_uri_handler_status status,
 
 	if (!strcmp(op, "write")) {
 		struct httpd_form_value *startv, *datav;
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		struct httpd_form_value *rawv;
+#endif
 		struct flash_target tgt;
 		u8 *buf = NULL;
 		size_t len = 0;
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		bool raw_mode = false;
+#endif
 
 		ret = flash_parse_storage_target(request, storage_sel,
 						  sizeof(storage_sel),
@@ -603,6 +658,12 @@ void flash_handler(enum httpd_uri_handler_status status,
 
 		if (!startv || !startv->data || !datav || !datav->data)
 			goto bad_req;
+
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		rawv = httpd_request_find_value(request, "raw");
+		if (rawv && rawv->data && !strcmp(rawv->data, "1"))
+			raw_mode = true;
+#endif
 
 		if (parse_u64_len(startv->data, &start))
 			goto bad_range;
@@ -625,7 +686,32 @@ void flash_handler(enum httpd_uri_handler_status status,
 
 		if (tgt.src == FAILSAFE_SRC_MTD) {
 #ifdef CONFIG_MTD
-			ret = flash_mtd_update_range(tgt.mtd, start, buf, len);
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+			if (raw_mode && nand_raw_is_nand(tgt.mtd)) {
+				size_t rps = nand_raw_page_size(tgt.mtd);
+				u64 first_page, pages;
+
+				if (!rps) {
+					ret = -EINVAL;
+				} else {
+					first_page = start / rps;
+					pages = (len + rps - 1) / rps;
+
+					ret = nand_raw_erase_blocks(tgt.mtd,
+						first_page, pages);
+					if (!ret) {
+						size_t wr = 0;
+						ret = nand_raw_write_pages(tgt.mtd,
+							first_page, pages,
+							buf, len, &wr);
+						len = wr;
+					}
+				}
+			} else
+#endif
+			{
+				ret = flash_mtd_update_range(tgt.mtd, start, buf, len);
+			}
 #else
 			ret = -ENODEV;
 #endif
@@ -659,6 +745,9 @@ void flash_handler(enum httpd_uri_handler_status status,
 		char target_from_name[64] = "";
 		u64 name_start = 0, name_end = 0;
 		size_t len = 0;
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+		bool raw_restore = false;
+#endif
 
 		fw = httpd_request_find_value(request, "backup");
 		if (!fw)
@@ -677,6 +766,12 @@ void flash_handler(enum httpd_uri_handler_status status,
 			strlcpy(target_name, target_from_name, sizeof(target_name));
 			start = name_start;
 			end = name_end;
+
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+			/* Auto-detect OOB backup by filename suffix */
+			if (fw->filename && strstr(fw->filename, "_oob"))
+				raw_restore = true;
+#endif
 		} else {
 			startv = httpd_request_find_value(request, "start");
 			endv = httpd_request_find_value(request, "end");
@@ -709,7 +804,32 @@ void flash_handler(enum httpd_uri_handler_status status,
 
 		if (tgt.src == FAILSAFE_SRC_MTD) {
 #ifdef CONFIG_MTD
-			ret = flash_mtd_restore_range(tgt.mtd, start, fw->data, len);
+#ifdef CONFIG_WEBUI_FAILSAFE_NAND_RAW
+			if (raw_restore && nand_raw_is_nand(tgt.mtd)) {
+				size_t rps = nand_raw_page_size(tgt.mtd);
+				u64 first_page, pages;
+
+				if (!rps) {
+					ret = -EINVAL;
+				} else {
+					first_page = start / rps;
+					pages = (len + rps - 1) / rps;
+
+					ret = nand_raw_erase_blocks(tgt.mtd,
+						first_page, pages);
+					if (!ret) {
+						size_t wr = 0;
+						ret = nand_raw_write_pages(tgt.mtd,
+							first_page, pages,
+							fw->data, len, &wr);
+						len = wr;
+					}
+				}
+			} else
+#endif
+			{
+				ret = flash_mtd_restore_range(tgt.mtd, start, fw->data, len);
+			}
 #else
 			ret = -ENODEV;
 #endif

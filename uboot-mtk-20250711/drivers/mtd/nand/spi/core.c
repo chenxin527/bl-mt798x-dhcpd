@@ -891,6 +891,7 @@ static const struct spinand_manufacturer *spinand_manufacturers[] = {
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_ATO
 	&ato_spinand_manufacturer,
+	&ato_ad_spinand_manufacturer,
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_BIWIN
 	&biwin_spinand_manufacturer,
@@ -907,6 +908,9 @@ static const struct spinand_manufacturer *spinand_manufacturers[] = {
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_ETRON
 	&etron_spinand_manufacturer,
+#endif
+#ifdef CONFIG_MTD_SPI_NAND_FISON
+	&fison_spinand_manufacturer,
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_FMSH
 	&fmsh_spinand_manufacturer,
@@ -944,6 +948,9 @@ static const struct spinand_manufacturer *spinand_manufacturers[] = {
 #ifdef CONFIG_MTD_SPI_NAND_MK
 	&mk_spinand_manufacturer,
 #endif
+#ifdef CONFIG_MTD_SPI_NAND_MIRA
+	&mira_spinand_manufacturer,
+#endif
 #ifdef CONFIG_MTD_SPI_NAND_PARAGON
 	&paragon_spinand_manufacturer,
 #endif
@@ -958,6 +965,9 @@ static const struct spinand_manufacturer *spinand_manufacturers[] = {
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_TOSHIBA
 	&toshiba_spinand_manufacturer,
+#endif
+#ifdef CONFIG_MTD_SPI_NAND_TYM
+	&tym_spinand_manufacturer,
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_UNIM
 	&unim_spinand_manufacturer,
@@ -978,6 +988,9 @@ static const struct spinand_manufacturer *spinand_manufacturers[] = {
 #endif
 #ifdef CONFIG_MTD_SPI_NAND_ZBIT
 	&zbit_spinand_manufacturer,
+#endif
+#ifdef CONFIG_MTD_SPI_NAND_ZENTEL
+	&zentel_spinand_manufacturer,
 #endif
 };
 
